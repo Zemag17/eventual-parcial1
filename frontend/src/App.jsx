@@ -1,91 +1,108 @@
 import { useState, useEffect } from 'react'
-import { GoogleLogin } from '@react-oauth/google'
-import { jwtDecode } from 'jwt-decode' // <--- IMPORTANTE: Esto es lo que pide la diapositiva
+import { GoogleLogin, googleLogout } from '@react-oauth/google'
+import { jwtDecode } from 'jwt-decode' 
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
 import './App.css'
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
-// --------------------------------------------------------
-// 1. AÑADE ESTAS IMPORTACIONES (Son necesarias para el fix)
-// --------------------------------------------------------
-import L from 'leaflet'; // <--- Importamos Leaflet base
-import 'leaflet/dist/leaflet.css'; // <--- Asegúrate de importar el CSS si no lo tenías
-
-// Importamos las imágenes directamente para que Vite las procese
+// Fix iconos Leaflet por defecto
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 
-// --------------------------------------------------------
-// 2. AÑADE ESTE BLOQUE DE CÓDIGO PARA ARREGLAR LOS PINES
-// --------------------------------------------------------
 let DefaultIcon = L.icon({
     iconUrl: icon,
     shadowUrl: iconShadow,
     iconSize: [25, 41],
     iconAnchor: [12, 41]
 });
-
 L.Marker.prototype.options.icon = DefaultIcon;
 
+// Componente auxiliar para recentrar el mapa
 function RecenterMap({ center }) {
   const map = useMap();
-  useEffect(() => { map.setView(center); }, [center, map]);
+
+  useEffect(() => {
+    // 1. Esto soluciona el problema del mapa gris/cortado al cargar
+    setTimeout(() => {
+      map.invalidateSize();
+    }, 100);
+
+    // 2. Esto centra el mapa
+    map.setView(center);
+  }, [center, map]);
+
   return null;
 }
 
 function App() {
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-  const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_NAME;
-  const UPLOAD_PRESET = 'examen';
+  const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_NAME; // Asegúrate de tener esto en tu .env
+  const UPLOAD_PRESET = 'examen'; // Asegúrate de que este preset existe en tu Cloudinary
 
   const [user, setUser] = useState(null);
-  const [eventos, setEventos] = useState([]);
-  const [center, setCenter] = useState([40.416775, -3.703790]); 
+  const [tokenData, setTokenData] = useState(null); 
+  const [reviews, setReviews] = useState([]);
+  const [center, setCenter] = useState([36.721274, -4.421399]); // Coordenadas por defecto (Málaga)
   const [busqueda, setBusqueda] = useState('');
   
-  const [nuevoEvento, setNuevoEvento] = useState({
-    nombre: '', timestamp: '', lugar: '', imagen: null
+  const [nuevaResena, setNuevaResena] = useState({
+    establecimiento: '', 
+    direccion: '', 
+    valoracion: 5, 
+    imagen: null
   });
 
-  useEffect(() => {
-    const fetchEventos = async () => {
+  // Cargar reseñas al inicio
+  const fetchReviews = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/eventos?lat=${center[0]}&lon=${center[1]}`);
+        const res = await fetch(`${API_URL}/api/reviews`);
         const data = await res.json();
-        setEventos(data);
-      } catch (error) { console.error("Error eventos", error); }
-    };
-    fetchEventos();
-  }, [center, API_URL]);
+        setReviews(data);
+      } catch (error) { console.error("Error fetching reviews", error); }
+  };
+
+  useEffect(() => {
+    fetchReviews();
+  }, []);
 
   // -----------------------------------------------------------------------
-  // MÉTODO DIAPOSITIVAS (Componente GoogleLogin + JWT)
+  // AUTH
   // -----------------------------------------------------------------------
   const handleLoginSuccess = (credentialResponse) => {
-    // ESTE ES EL MOMENTO DE LA VERDAD
-    console.log("🔥 ¡RESPUESTA RECIBIDA DE GOOGLE!", credentialResponse);
-
-    // Slide 7 y 8: Decodificar el JWT
-    const decoded = jwtDecode(credentialResponse.credential);
-    console.log("✅ DATOS DECODIFICADOS:", decoded);
-
+    const rawToken = credentialResponse.credential;
+    const decoded = jwtDecode(rawToken);
+    
     setUser({
       email: decoded.email,
       name: decoded.name,
       picture: decoded.picture
+    });
+
+    setTokenData({
+      token: rawToken,
+      iat: decoded.iat * 1000,
+      exp: decoded.exp * 1000
     });
   };
 
   const handleLoginError = () => {
     console.log('❌ Login Failed');
   };
-  // -----------------------------------------------------------------------
 
-  const buscarDireccion = async () => {
+  const logout = () => {
+    googleLogout();
+    setUser(null);
+    setTokenData(null);
+  };
+
+  // -----------------------------------------------------------------------
+  // MAPA & GEOLOCALIZACIÓN
+  // -----------------------------------------------------------------------
+  const buscarDireccionMapa = async () => {
     if (!busqueda) return; 
     try {
-      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${busqueda}&limit=1`, {
-         headers: { "Accept-Language": "es-ES" }
-      });
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${busqueda}&limit=1`);
       const data = await response.json();
       if (data?.[0]) {
         setCenter([parseFloat(data[0].lat), parseFloat(data[0].lon)]); 
@@ -93,124 +110,188 @@ function App() {
     } catch (e) { console.error(e); }
   };
 
-  const handleFileChange = (e) => setNuevoEvento({ ...nuevoEvento, imagen: e.target.files[0] });
+  // -----------------------------------------------------------------------
+  // CREACIÓN DE RESEÑA
+  // -----------------------------------------------------------------------
+  const handleFileChange = (e) => setNuevaResena({ ...nuevaResena, imagen: e.target.files[0] });
 
-  const crearEvento = async (e) => {
+  const crearResena = async (e) => {
     e.preventDefault();
-    if (!nuevoEvento.imagen) return alert("Sube una imagen");
-    try {
-      const formData = new FormData();
-      formData.append('file', nuevoEvento.imagen);
-      formData.append('upload_preset', UPLOAD_PRESET);
-      const resCloud = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: 'POST', body: formData });
-      const dataCloud = await resCloud.json();
-      
-      const resGeo = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${nuevoEvento.lugar}`);
-      const dataGeo = await resGeo.json();
-      const coords = dataGeo?.[0] ? { lat: parseFloat(dataGeo[0].lat), lon: parseFloat(dataGeo[0].lon) } : { lat: 0, lon: 0 };
+    if (!user) return alert("Debes identificarte para publicar.");
 
-      const resBack = await fetch(`${API_URL}/api/eventos`, {
+    try {
+      let imageUrl = '';
+
+      // 1. Subir imagen a Cloudinary (si existe)
+      if (nuevaResena.imagen) {
+          const formData = new FormData();
+          formData.append('file', nuevaResena.imagen);
+          formData.append('upload_preset', UPLOAD_PRESET);
+          
+          const resCloud = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { 
+              method: 'POST', 
+              body: formData 
+          });
+          const dataCloud = await resCloud.json();
+          imageUrl = dataCloud.secure_url;
+      }
+
+      // 2. Obtener coordenadas de la dirección escrita
+      const resGeo = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${nuevaResena.direccion}`);
+      const dataGeo = await resGeo.json();
+      const coords = dataGeo?.[0] 
+        ? { lat: parseFloat(dataGeo[0].lat), lon: parseFloat(dataGeo[0].lon) } 
+        : { lat: 0, lon: 0 }; 
+
+      // 3. Preparar el payload para el backend
+      const payload = {
+        establecimiento: nuevaResena.establecimiento,
+        direccion: nuevaResena.direccion,
+        valoracion: parseInt(nuevaResena.valoracion),
+        coords,
+        autor: {
+            email: user.email, 
+            nombre: user.name
+        },
+        tokenInfo: { 
+            token: tokenData.token,
+            emitido: new Date(tokenData.iat),
+            caduca: new Date(tokenData.exp)
+        },
+        imagen: imageUrl
+      };
+
+      // 4. Enviar a tu Backend
+      const resBack = await fetch(`${API_URL}/api/reviews`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          nombre: nuevoEvento.nombre,
-          timestamp: nuevoEvento.timestamp,
-          lugar: nuevoEvento.lugar,
-          coords,
-          organizador: user.email,
-          imagen: dataCloud.secure_url
-        })
+        body: JSON.stringify(payload)
       });
 
       if (resBack.ok) {
-        alert("Evento creado!");
-        setNuevoEvento({ nombre: '', timestamp: '', lugar: '', imagen: null });
-        const res = await fetch(`${API_URL}/api/eventos?lat=${center[0]}&lon=${center[1]}`);
-        setEventos(await res.json());
+        alert("¡Reseña creada con éxito!");
+        setNuevaResena({ establecimiento: '', direccion: '', valoracion: 5, imagen: null });
+        fetchReviews(); // Recargar mapa
       }
-    } catch (error) { console.error(error); alert("Error creando evento"); }
+    } catch (error) { console.error(error); alert("Error creando reseña"); }
   };
 
   return (
-    <div className="app-container" style={{ padding: '20px', fontFamily: 'sans-serif' }}>
-      <h1>Eventual</h1>
+    <div className="app-container">
+      <h1>ReViews: Opiniones de Sitios</h1>
       
+      {/* LOGIN / FORMULARIO */}
       {!user ? (
-        <div style={{ padding: '20px', border: '1px solid #ddd', borderRadius: '8px' }}>
-          <h2>Inicia sesión</h2>
-          
-          {/* COMPONENTE OFICIAL (Como en las diapositivas) */}
+        <div className="card-box">
+          <h2>Identifícate para participar</h2>
           <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <GoogleLogin
-              onSuccess={handleLoginSuccess}
-              onError={handleLoginError}
-              useOneTap
-              // Esto evita el bloqueo moderno de Chrome en localhost
-              use_fedcm_for_prompt={false} 
-            />
+            <GoogleLogin onSuccess={handleLoginSuccess} onError={handleLoginError} useOneTap={false} />
           </div>
-
         </div>
       ) : (
-        <div style={{ padding: '20px', border: '1px solid #4caf50', borderRadius: '8px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div className="card-box logged-in">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
             {user.picture && <img src={user.picture} alt="user" style={{ borderRadius: '50%', width: '40px' }} />}
             <h3>Hola, {user.name}</h3>
+            <button onClick={logout} className="btn-logout">Cerrar Sesión</button>
           </div>
-          <h4>Crear Evento</h4>
-          <form onSubmit={crearEvento} style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '400px' }}>
-            <input type="text" placeholder="Nombre" value={nuevoEvento.nombre} onChange={e => setNuevoEvento({...nuevoEvento, nombre: e.target.value})} required style={{ padding: '8px' }}/>
-            <input type="datetime-local" value={nuevoEvento.timestamp} onChange={e => setNuevoEvento({...nuevoEvento, timestamp: e.target.value})} required style={{ padding: '8px' }}/>
-            <input type="text" placeholder="Lugar" value={nuevoEvento.lugar} onChange={e => setNuevoEvento({...nuevoEvento, lugar: e.target.value})} required style={{ padding: '8px' }}/>
-            <input type="file" accept="image/*" onChange={handleFileChange} required />
-            <button type="submit" style={{ padding: '10px', background: '#4caf50', color: 'white', border: 'none' }}>Publicar</button>
+
+          <h4>Nueva Reseña</h4>
+          <form onSubmit={crearResena} className="form-column">
+            <input 
+                type="text" 
+                className="form-input" 
+                placeholder="Nombre Establecimiento" 
+                value={nuevaResena.establecimiento} 
+                onChange={e => setNuevaResena({...nuevaResena, establecimiento: e.target.value})} 
+                required 
+            />
+            <input 
+                type="text" 
+                className="form-input" 
+                placeholder="Dirección (ej: Calle Larios, Málaga)" 
+                value={nuevaResena.direccion} 
+                onChange={e => setNuevaResena({...nuevaResena, direccion: e.target.value})} 
+                required 
+            />
+            
+            <div style={{display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+                <label>Valoración (0-5): </label>
+                <input 
+                    type="number" 
+                    min="0" 
+                    max="5" 
+                    className="form-input" 
+                    style={{width:'60px'}} 
+                    value={nuevaResena.valoracion} 
+                    onChange={e => setNuevaResena({...nuevaResena, valoracion: e.target.value})} 
+                    required 
+                />
+            </div>
+
+            <input type="file" accept="image/*" onChange={handleFileChange} />
+            <button type="submit" className="btn-primary">Publicar Opinión</button>
           </form>
         </div>
       )}
 
-      <hr />
-      <div style={{ marginTop: '20px' }}>
-         <div style={{ marginBottom: '10px', display: 'flex', gap: '10px' }}>
-            <input type="text" placeholder="Buscar zona..." value={busqueda} onChange={e => setBusqueda(e.target.value)} style={{ padding: '8px', flex: 1 }} />
-            <button onClick={buscarDireccion}>Buscar</button>
+      <hr style={{width: '100%', margin: '20px 0'}} />
+      
+      {/* BUSCADOR Y MAPA */}
+      <div style={{ width: '100%' }}>
+         <div className="search-bar">
+            <input 
+                type="text" 
+                className="form-input" 
+                placeholder="Buscar zona en mapa..." 
+                value={busqueda} 
+                onChange={e => setBusqueda(e.target.value)} 
+                style={{ flex: 1 }} 
+            />
+            <button onClick={buscarDireccionMapa} className="btn-primary" style={{ width: '100px' }}>Buscar</button>
          </div>
-         <div style={{ height: '400px', border: '2px solid #ddd' }}>
-            <MapContainer center={center} zoom={13} style={{ height: '100%', width: '100%' }}>
+
+         <div className="map-wrapper">
+            <MapContainer center={center} zoom={13}>
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; OpenStreetMap' />
               <RecenterMap center={center} />
-              {eventos.map(ev => (
-                <Marker key={ev._id} position={[ev.coords.lat, ev.coords.lon]}>
-                  <Popup>
-                    <div style={{ textAlign: 'center' }}>
-                      {/* IMAGEN */}
-                      {ev.imagen && (
-                        <img 
-                          src={ev.imagen} 
-                          alt={ev.nombre} 
-                          style={{ width: '100%', borderRadius: '4px', marginBottom: '5px' }} 
-                        />
+              
+              {reviews.map(rev => (
+                <Marker key={rev._id} position={[rev.coords.lat, rev.coords.lon]}>
+                  <Popup maxWidth="300">
+                    <div style={{ textAlign: 'left', fontSize: '14px' }}>
+                      <h3 style={{margin: '0 0 5px 0'}}>{rev.establecimiento}</h3>
+                      <p style={{margin: '0'}}>📍 {rev.direccion}</p>
+                      <p style={{margin: '5px 0'}}>⭐ Valoración: <strong>{rev.valoracion}/5</strong></p>
+                      {rev.imagen && (
+                        <img src={rev.imagen} alt="review" style={{ width: '100%', borderRadius: '4px', marginTop: '5px' }} />
                       )}
-                      
-                      {/* TÍTULO */}
-                      <strong style={{ fontSize: '1.1em' }}>{ev.nombre}</strong>
-                      <br/>
-                      
-                      {/* FECHA FORMATEADA */}
-                      <span style={{ fontSize: '0.9em', color: '#555' }}>
-                        {new Date(ev.timestamp).toLocaleString()}
-                      </span>
-                      <br/>
-                      
-                      {/* LUGAR */}
-                      <span style={{ fontSize: '0.8em', fontStyle: 'italic' }}>📍 {ev.lugar}</span>
+                      <hr style={{margin: '10px 0'}}/>
+                      <div style={{ fontSize: '11px', color: '#555', background: '#f9f9f9', padding: '5px' }}>
+                        <p><strong>Autor:</strong> {rev.autor.nombre}</p>
+                        {rev.tokenInfo && <p><strong>Expira:</strong> {new Date(rev.tokenInfo.caduca).toLocaleTimeString()}</p>}
+                      </div>
                     </div>
                   </Popup>
                 </Marker>
               ))}
             </MapContainer>
          </div>
+         
+         {/* LISTADO SIMPLE */}
+         <div style={{marginTop: '20px'}}>
+            <h3>Listado de Reseñas</h3>
+            <ul className="review-list">
+                {reviews.map(r => (
+                    <li key={r._id}>
+                        <strong>{r.establecimiento}</strong> ({r.direccion}) - {r.valoracion} ⭐
+                    </li>
+                ))}
+            </ul>
+         </div>
       </div>
     </div>
   )
 }
+
 export default App
