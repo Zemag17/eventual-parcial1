@@ -4,6 +4,28 @@ import { jwtDecode } from 'jwt-decode' // <--- IMPORTANTE: Esto es lo que pide l
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
 import './App.css'
 
+// --------------------------------------------------------
+// 1. AÑADE ESTAS IMPORTACIONES (Son necesarias para el fix)
+// --------------------------------------------------------
+import L from 'leaflet'; // <--- Importamos Leaflet base
+import 'leaflet/dist/leaflet.css'; // <--- Asegúrate de importar el CSS si no lo tenías
+
+// Importamos las imágenes directamente para que Vite las procese
+import icon from 'leaflet/dist/images/marker-icon.png';
+import iconShadow from 'leaflet/dist/images/marker-shadow.png';
+
+// --------------------------------------------------------
+// 2. AÑADE ESTE BLOQUE DE CÓDIGO PARA ARREGLAR LOS PINES
+// --------------------------------------------------------
+let DefaultIcon = L.icon({
+    iconUrl: icon,
+    shadowUrl: iconShadow,
+    iconSize: [25, 41],
+    iconAnchor: [12, 41]
+});
+
+L.Marker.prototype.options.icon = DefaultIcon;
+
 function RecenterMap({ center }) {
   const map = useMap();
   useEffect(() => { map.setView(center); }, [center, map]);
